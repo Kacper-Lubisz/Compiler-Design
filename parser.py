@@ -105,8 +105,6 @@ def read_file(input_file):
 
     logic = (variables, constants, predicates, equality, connectives, quantifiers)
 
-    print(logic)
-
     return logic, formula
 
 
@@ -124,8 +122,9 @@ class SyntaxError(Exception):
 
         string += self.message + "\n"
 
-        line_start = self.token.absolute_start
-        line_end = self.token.absolute_start
+        line_start = self.token.absolute_start if self.token.absolute_start < len(context_string) else len(
+            context_string) - 1
+        line_end = line_start
 
         while line_start != 0 and context_string[line_start] != '\n':
             line_start -= 1
@@ -134,6 +133,8 @@ class SyntaxError(Exception):
             previous_line_start = line_start - 1
             while previous_line_start != 0 and context_string[previous_line_start] != '\n':
                 previous_line_start -= 1
+            previous_line_start += 1
+            line_start += 1
         else:
             previous_line_start = None
 
@@ -156,14 +157,11 @@ class SyntaxError(Exception):
 
         if previous_line_start is not None:
             justified_previous_number = str(line_number - 1).rjust(max_line_number_length, ' ')
-            string += f"{justified_previous_number} | {context_string[previous_line_start + 1:line_start]}\n"
+            string += f"{justified_previous_number} |{context_string[previous_line_start:line_start - 1]}\n"
 
         justified_line_number = str(line_number).rjust(max_line_number_length, ' ')
 
-        string += f"{justified_line_number} | {context_string[line_start + 1:line_end]}\n"
-
-        print(self.token)
-        print(self.token.line_start)
+        string += f"{justified_line_number} |{context_string[line_start:line_end]}\n"
 
         tab_size = 4
         offset_within_line = 0  # in spaces
@@ -178,12 +176,14 @@ class SyntaxError(Exception):
             span_length += 1
             if char == '\t':
                 span_length = math.ceil(span_length / tab_size) * tab_size
+        if span_length == 0:
+            span_length = 1
 
-        string += " " * (len(justified_line_number) + 3 + offset_within_line) + "^" * span_length + "\n"
+        string += " " * (len(justified_line_number) + 2 + offset_within_line) + "^" * span_length + "\n"
 
         if following_line_end is not None:
             justified_following_number = str(line_number + 1).rjust(max_line_number_length, ' ')
-            string += f"{justified_following_number} | {context_string[line_end + 1:following_line_end]}\n"
+            string += f"{justified_following_number} |{context_string[line_end + 1:following_line_end]}\n"
 
         return string
 
@@ -254,10 +254,12 @@ class FSM:
         return self.__repr__()
 
     def __repr__(self):
-        return f"FSMInstance(state: '{self.current_state}', snap:'{self.span}')"
+        return f"FSMInstance(state: '{self.current_state}', span:'{self.span}')"
 
 
 def tokenise(string: str, machines: Sequence[FSM]):
+    string += "\0"
+
     token_id = 0
     cursor = 0
     line_start = 0
@@ -365,60 +367,79 @@ def build_match_one_of_token_machine(matches, token_name):
     start_state = ""
     for match in matches:
         current = start_state
+
         for char in match:
             next_state = current + char
 
             states[current] = None
-            transitions[current] = {char: next_state}
+            if current in transitions:
+                transitions[current][char] = next_state
+            else:
+                transitions[current] = {char: next_state}
 
             current = next_state
 
     return FSM(states, start_state, transitions)
 
 
-def recursive_descent(replacement_rules, terminals, tokens, cursor_index, looking_for):
+def recursive_descent(replacement_rules, tokens, cursor_index, looking_for, depth=0):
     current_token = tokens[cursor_index]
 
-    used_rule, used_replacement = None, None
+    if current_token.type == looking_for:
+        # print("\t" * depth + f"found {looking_for}")
+        return 1, current_token
+    else:
 
-    for rule in replacement_rules:
-        root, replacements = rule
+        used_rule, new_sequence = None, None
 
-        if used_rule is not None:
-            break
+        for rule in replacement_rules:
+            root, replacements = rule
 
-        if root is not looking_for:
-            continue
-
-        for rep in replacements:
-
-            current_token_name, span = current_token.type, current_token.span
-            if len(rep) == 0 or current_token_name == rep[0]:
-                used_rule, used_replacement = rule, rep
+            if used_rule is not None:
                 break
 
-    raise SyntaxError(f"unexpected symbol sequence '{tokens[2].span}'", "Formula", tokens[2])
+            if root is not looking_for:
+                continue
 
-    if used_replacement is None:
-        raise SyntaxError(f"unexpected symbol sequence '{current_token.span}'", "Formula", current_token)
+            for replacement in replacements:
 
-    new_cursor = cursor_index
-    children = []
-    for character in used_replacement:
+                if used_rule is not None:
+                    break
 
-        if character in terminals:
-            new_cursor += 1
-            children.append(character)
-            print(f"accepting character {character}")
-        else:
-            print(f"recurring at {new_cursor} to look for a {character}")
-            cursor_change, sub_tree = recursive_descent(replacement_rules, terminals, tokens, new_cursor, character)
+                sequence, look_aheads = replacement
+
+                if len(look_aheads) == 0:
+                    used_rule, new_sequence = rule, sequence
+                    break
+                else:
+                    matched = True
+                    for look_ahead in look_aheads:
+                        distance, expected = look_ahead
+
+                        if cursor_index + distance >= len(tokens) or tokens[cursor_index + distance].type != expected:
+                            matched = False
+                            break
+
+                    if matched:
+                        used_rule, new_sequence = rule, sequence
+
+        if new_sequence is None:
+            raise SyntaxError(f"Expected to find a '{looking_for}', instead found '{current_token.span}'", "Formula",
+                              current_token)
+
+        new_cursor = cursor_index
+        children = []
+        for looking_for in new_sequence:
+            # print(depth * '\t' + f"recurring at {new_cursor} to look for a {looking_for}")
+            #
+            cursor_change, sub_tree = recursive_descent(replacement_rules, tokens, new_cursor,
+                                                        looking_for, depth + 1)
             new_cursor += cursor_change
             children.append(sub_tree)
 
-    index_change = new_cursor - cursor_index
+        index_change = new_cursor - cursor_index
 
-    return index_change, (used_rule[0], children)
+        return index_change, (used_rule[0], children)
 
 
 def semantic_analysis(tree):
@@ -453,37 +474,35 @@ def main(input_file):
 
     replacement_rules = [
         ("BIN_OP", [
-            ["AND"],
-            ["OR"],
-            ["+"]
+            (["AND"], [(0, "AND")]),
+            (["OR"], [(0, "OR")]),
+            (["+"], [(0, "+")])
         ]),
 
         ("EXPRESSION", [
-            ["OPEN_BRACKET", "EXPRESSION", "BIN_OP", "EXPRESSION", "CLOSE_BRACKET"],
-            ["UN_PRE_OP", "EXPRESSION"],
-            ["IDENTIFIER", "PRED_BODY"],
-            ["IDENTIFIER"],
+            (["OPEN_BRACKET", "EXPRESSION", "BI_IN_OP", "EXPRESSION", "CLOSE_BRACKET"], [(0, "OPEN_BRACKET")]),
+            (["UN_PRE_OP", "EXPRESSION"], [(0, "UN_PRE_OP")]),
+            (["IDENTIFIER", "PRED_BODY"], [(1, "OPEN_BRACKET")]),
+            (["IDENTIFIER"], [(0, "IDENTIFIER")]),
         ]),
 
         ("PRED_BODY", [
-            ["OPEN_BRACKET", "EXPRESSION", "PRED_BODY+"],
+            (["OPEN_BRACKET", "EXPRESSION", "PRED_BODY+"], [(0, "OPEN_BRACKET")]),
         ]),
 
         ("PRED_BODY+", [
-            ["CLOSE_BRACKET"],
-            ["COMMA", "EXPRESSION", "PRED_BODY+"],
-            []
+            (["CLOSE_BRACKET"], [(0, "CLOSE_BRACKET")]),
+            (["COMMA", "EXPRESSION", "PRED_BODY+"], [(0, "COMMA")]),
+            ([], [])
         ])
-
     ]
     terminals = {"IDENTIFIER", "OPEN_BRACKET", "CLOSE_BRACKET", "COMMA"}
-    string = '"(\n	(\n		function_name(aVariable + 2, bigvariable, constant, D) \n		AND\n		NOT function_2name(aVariable, bigvariable, constant, D)\n	) \n	OR\n	anotherone(aVariable, bigvariable, constant, D) \n)"'
+    string = '(\n	(\n		function_name(aVariable, bigvariable, constant, D) \n		AND\n		NOT function_2name(aVariable, bigvariable, constant, D)\n	) \n	OR\n	anotherone(aVariable, bigvariable, constant, D) \n)'
 
     # token_list = tokenise(formula, token_machines)
     token_list = tokenise(string, token_machines)
-
     try:
-        _, tree = recursive_descent(replacement_rules, terminals, token_list, 0, "E")
+        _, tree = recursive_descent(replacement_rules, token_list, 0, "EXPRESSION")
         print_tree(tree)
 
     except SyntaxError as syntax_error:
@@ -496,8 +515,8 @@ def main(input_file):
 
 
 def print_tree(tree, depth=0):
-    if isinstance(tree, str):
-        print("\t" * depth + tree)
+    if isinstance(tree, Token):
+        print("\t" * depth + str(tree))
     else:
         root, children = tree
         print("\t" * depth + root)
