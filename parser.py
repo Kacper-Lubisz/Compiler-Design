@@ -2,7 +2,7 @@ import math
 import sys
 from abc import abstractmethod
 from string import ascii_lowercase, ascii_uppercase, digits
-from typing import List, Tuple, Dict, Union, TextIO
+from typing import List, Tuple, Dict, Union, TextIO, Any, Set
 import networkx as nx
 import matplotlib.pyplot as plt
 
@@ -158,6 +158,28 @@ class Token:
         return f"{self.location} {self.line}:{self.line_start} (character {self.absolute_start})"
 
 
+class Operator:
+    """
+    This class encodes the operation tree which is used for the semantic analysis part of the parser
+    """
+
+    def __init__(
+            self,
+            token: Token,
+            operator_type: str,
+            operands
+    ):
+        self.token = token
+        self.operator_type = operator_type
+        self.operands = operands
+
+    def __str__(self) -> str:
+        return f"Operator({self.token.span})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+
 class TokenError(Exception):
     """
     This class represents all the Exceptions which can be raised during the parsing process
@@ -261,19 +283,38 @@ class TokenError(Exception):
 
 
 class FSM:
+    """
+    This class models an FSM.
+    """
 
-    def __init__(self, states, start_state, transitions):
+    def __init__(
+            self,
+            states: Dict[Any, Tuple[bool, str]],
+            start_state: Any,
+            transitions: Dict[Any, Dict[Any, Any]]
+    ):
         self.states = states
         self.transitions = transitions
         self.current_state = self.start_state = start_state
 
         self.span = ""
 
-    def reset(self):
+    def reset(self) -> None:
+        """
+        Resets the FSM to the start state
+        """
         self.span = ""
         self.current_state = self.start_state
 
-    def feed(self, character):
+    def feed(self, character: Any) -> Union[None, Tuple[bool, str, str]]:
+        """
+        Transitions the FSM into a new state, returns the properties associated with that state and the span which lead
+        to that state.  If there is no such transition possible then the state is set to None and the machine has
+        reached it's end.
+
+        :param character: The value used to determine which transition should occur
+        :return: The properties of the new state, null otherwise
+        """
 
         transitions_out = self.transitions[self.current_state]
 
@@ -302,6 +343,9 @@ class FSM:
         return back_step, token_name, self.span
 
     def reached_end(self):
+        """
+        :return: if the machine is in a dead end state
+        """
         return self.current_state is None
 
     def __str__(self):
@@ -311,7 +355,13 @@ class FSM:
         return f"FSMInstance(state: '{self.current_state}', span:'{self.span}')"
 
 
-def to_tokens(string: str, machines: List[FSM]):
+def to_tokens(string: str, machines: List[FSM]) -> List[Token]:
+    """
+    This method performs the tokenizing part of the compilation process
+    :param string: The string to tokenize
+    :param machines: The list of FSMs which accept tokens in the string
+    :return: A list of tokens produced by the FSMs
+    """
     location_description = "Formula"
     string += "\0"
 
@@ -368,27 +418,48 @@ def to_tokens(string: str, machines: List[FSM]):
     return tokens
 
 
-def build_repeated_symbol_token_machine(matching_characters, token_name):
-    # building a machine which accepts the regex (matching_characters)*
+def build_repeated_symbol_token_machine(
+        matching_characters: List[Any],
+        token_name,
+        back_step_characters: List[Union[str, None]]
+):
+    """
+    This function builds a FMS which accepts any sequence of the specified matching characters, followed by the
+    back_step_character.
+    :param matching_characters: A list of characters that can be matched
+    :param token_name: The token type of the tokens this machine will produce
+    :param back_step_characters: The set of characters which can occur as the character after a match which cause the
+     match to be accepted, None meaning any character
+    :return: The FSM which accepts the specified string
+    """
 
     start = 0
     matching = 1
     accept = 2
 
+    states = {
+        accept: (True, token_name),
+        start: None,
+        matching: None
+    }
     transitions = {
         start: dict(),
-        matching: {None: accept}
+        matching: dict()
     }
+
+    for char in back_step_characters:
+        transitions[matching][char] = accept
+
     for char in matching_characters:
         transitions[start][char] = matching
         transitions[matching][char] = matching
 
-    return FSM({accept: (True, token_name), start: None, matching: None}, start, transitions)
+    return FSM(states, start, transitions)
 
 
 def build_simple_match_token_machine(match: str, token_name: str, back_step_characters: List[Union[str, None]]) -> FSM:
     """
-    This method builds a FMS which accept the specified match
+    This method builds a FMS which accept the specified match, followed by any specified back_step character
     :param match: The matching string
     :param token_name: The token type of the tokens this machine will produce
     :param back_step_characters: The set of characters which can occur as the character after a match which cause the
@@ -458,7 +529,31 @@ def build_match_one_of_token_machine(matches: List[str], token_name: str, back_s
     return FSM(states, start_state, transitions)
 
 
-def recursive_descent(replacement_rules, tokens, cursor_index, looking_for, expected_translator):
+def recursive_descent(
+        replacement_rules: List[Tuple[str, List[Tuple[List[str], List[Tuple[int, str]]]]]],
+        tokens: List[Token],
+        cursor_index: int,
+        looking_for: str,
+        expected_translator: Dict[str, str]
+) -> Tuple[
+    int,
+    Union[
+        Token,
+        Tuple[str, List[Any]]
+    ]
+]:
+    """
+    Performs recursive descent to build the derivation tree of the string if possible, if not possible then a
+    TokenError is raised
+    :raise: TokenError if a syntax error exists
+    :param replacement_rules: The replacement rules
+    :param tokens: The sequence of tokens to be parsed
+    :param cursor_index: The index pointing to where parsing should start from
+    :param looking_for: The terminal/none-terminal which is to being looked for
+    :param expected_translator: A dictionary translating between what is expected and what an error should read
+    :return: The syntax tree
+    """
+
     current_token = tokens[cursor_index]
 
     if current_token.token_type == looking_for:
@@ -527,7 +622,18 @@ def recursive_descent(replacement_rules, tokens, cursor_index, looking_for, expe
         return index_change, (used_rule[0], children)
 
 
-def semantic_analysis(operation_tree, symbol_scope, fol):
+def semantic_analysis(
+        operation_tree: Union[Token, Operator],
+        symbol_scope: Set[str],
+        fol: Tuple[List[str], List[str], Dict[str, int], str, List[str], List[str]]) -> List[TokenError]:
+    """
+    This method analyses the semantics of the formula for errors and returns a list of them
+    :param operation_tree:
+    :param symbol_scope:
+    :param fol:
+    :return:
+    """
+
     variables, constants, predicates, equality, connectives, quantifiers = fol
 
     issues = []
@@ -613,40 +719,12 @@ def semantic_analysis(operation_tree, symbol_scope, fol):
     return issues
 
 
-class Operand:
-    def __init__(self, token: Token):
-        self.token = token
-
-    def __str__(self) -> str:
-        return f"Operand({self.token.span})"
-
-    def __repr__(self) -> str:
-        return self.__str__()
-
-
-class Operator(Operand):
+def build_operation_tree(syntax_tree: Union[Token, Tuple[str, List[Any]]]) -> Union[Token, Operator, List[Token], None]:
     """
-    This class encodes the operation tree which is used for the semantic analysis part of the parser
+    This method parses the derivation tree to convert it to an operation tree.
+    :param syntax_tree: The syntax tree to parse (Any in the type definition means the enter tree type recurred)
+    :return: The operation tree equivalent
     """
-
-    def __init__(
-            self,
-            token: Token,
-            operator_type: str,
-            operands
-    ):
-        super().__init__(token)
-        self.operator_type = operator_type
-        self.operands = operands
-
-    def __str__(self) -> str:
-        return f"Operator({self.token.span})"
-
-    def __repr__(self) -> str:
-        return self.__str__()
-
-
-def build_operation_tree(syntax_tree):
     if isinstance(syntax_tree, Token):  # terminal
         token = syntax_tree
 
@@ -704,7 +782,37 @@ def build_operation_tree(syntax_tree):
                 return [left] + right
 
 
-def print_replacement_rules(rules):
+def print_replacement_rules(
+        rules: List[
+            Tuple[
+                str,
+                List[
+                    Tuple[
+                        List[str],
+                        List[Tuple[int, str]]
+                    ]
+                ]
+            ]
+        ]
+) -> None:
+    """
+    This method prints out the replacement rules in Backus–Naur form
+    :param rules: The replacement rules
+
+    The following describes the rule type definition
+    List[
+        Tuple[
+            str, # replace from
+            List[  # replace tos
+                Tuple[
+                    List[str], # new sequence
+                    List[Tuple[int, str]] # look ahead rules (look forward by int and see str)
+                ]
+            ]
+        ]
+    ]
+    """
+
     for root, replacements in rules:
         print("<" + root + ">", "::=", end=" ")
         for index, (new_sequence, _) in enumerate(replacements):
@@ -716,7 +824,7 @@ def print_replacement_rules(rules):
         print()
 
 
-def draw_operation_tree(tree: Union[Operand, Token], tree_file_path: str) -> None:
+def draw_operation_tree(tree: Union[Operator, Token], tree_file_path: str) -> None:
     """
     This method creates an image of the operation tree passed to it and writes it to a file
     :param tree: The tree to visualise
@@ -775,12 +883,12 @@ def draw_operation_tree(tree: Union[Operand, Token], tree_file_path: str) -> Non
     plt.savefig(tree_file_path)
 
 
-def main(input_file: str, tree_image_path: str, log_file_path: str) -> None:
-    log_file: TextIO = open(log_file_path, "w")
+def main(input_file: str, tree_path: str, log_path: str) -> None:
+    log_file: TextIO = open(log_path, "w")
     print(f"Arguments:\n"
           f"Input File: {input_file}\n"
-          f"Tree Output File: {tree_image_path}\n"
-          f"Log File: {log_file_path}\n", file=log_file)
+          f"Tree Output File: {tree_path}\n"
+          f"Log File: {log_path}\n", file=log_file)
 
     print("        Reading input file", file=log_file)
     try:
@@ -810,10 +918,10 @@ def main(input_file: str, tree_image_path: str, log_file_path: str) -> None:
         build_match_one_of_token_machine([equality], "BI_ID_IN_OP", white_space),
         build_match_one_of_token_machine(connectives[:-1], "BI_IN_OP", white_space),
         build_match_one_of_token_machine([connectives[-1]], "UN_PRE_OP", white_space),
-        build_repeated_symbol_token_machine(ascii_lowercase + ascii_uppercase + digits + "_", "IDENTIFIER")
+        build_repeated_symbol_token_machine(ascii_lowercase + ascii_uppercase + digits + "_", "IDENTIFIER", [None])
     ]  # TODO write a function to combine all these machines into one
 
-    replacement_rules = [
+    replacement_rules = [  # grammar definition
         ("FORMULA", [
             # in the following line [(0, "OPEN_BRACKET")] defines the lookahead needed to match this replacement
             (["OPEN_BRACKET", "BIN_COMB", "CLOSE_BRACKET"], [(0, "OPEN_BRACKET")]),
@@ -879,7 +987,7 @@ def main(input_file: str, tree_image_path: str, log_file_path: str) -> None:
             print("        No issues found", file=log_file)
 
         print("        Drawing Tree", file=log_file)
-        draw_operation_tree(operation_tree, tree_image_path)
+        draw_operation_tree(operation_tree, tree_path)
         print("SUCCESS Drawing Tree", file=log_file)
 
     except TokenError as syntax_error:
@@ -888,7 +996,13 @@ def main(input_file: str, tree_image_path: str, log_file_path: str) -> None:
         return
 
 
-def print_operation_tree_to_stdout(tree, depth=0):
+def print_operation_tree_to_stdout(tree: Union[Token, Operator], depth: int = 0) -> None:
+    """
+    This method prints an operation tree to the console
+    :param tree: The tree to be printed
+    :param depth: The current depth
+    """
+
     if isinstance(tree, Operator):
         print("\t" * depth + f"{tree.token.span}")
 
@@ -899,14 +1013,19 @@ def print_operation_tree_to_stdout(tree, depth=0):
         print("\t" * depth + str(tree.span))
 
 
-def print_tree_to_stdout(tree, depth=0):
+def print_syntax_tree_to_stdout(tree: Union[Token, Tuple], depth: int = 0) -> None:
+    """
+    This method prints a syntax tree to the console
+    :param tree: The tree to be printed
+    :param depth: The current depth
+    """
     if isinstance(tree, Token):
         print("\t" * depth + str(tree))
     else:
         root, children = tree
         print("\t" * depth + root)
         for c in children:
-            print_tree_to_stdout(c, depth + 1)
+            print_syntax_tree_to_stdout(c, depth + 1)
 
 
 if __name__ == '__main__':
