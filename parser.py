@@ -2,12 +2,17 @@ import math
 import sys
 from abc import abstractmethod
 from string import ascii_lowercase, ascii_uppercase, digits
-from typing import List, Tuple, Dict, Union
+from typing import List, Tuple, Dict, Union, TextIO
 import networkx as nx
 import matplotlib.pyplot as plt
 
 
-# from enum import Enum
+class InvalidInputException(Exception):
+    """
+    This exception is thrown when the input file is invalid
+    """
+    pass
+
 
 def read_file(input_file: str) -> Tuple[
     Tuple[
@@ -29,7 +34,6 @@ def read_file(input_file: str) -> Tuple[
 
     with open(input_file, "r") as file:
         content = file.read()
-        # file with all white space replaced with ' ' characters
 
     search_for = [
         "variables",
@@ -47,8 +51,7 @@ def read_file(input_file: str) -> Tuple[
         start_index = content.find(search_item)
 
         if start_index == -1:
-            print("Couldn't find the string '" + search_item + "' in the input file")
-            exit(1)
+            raise Exception("Couldn't find the string '" + search_item + "' in the input file")
 
         end_indices.append(start_index)
         start_index += len(search_item)
@@ -98,18 +101,16 @@ def read_file(input_file: str) -> Tuple[
         split = predicate.split("[")
 
         if len(split) != 2:
-            print("Missing name or arity of predicate in the input file", file=sys.stderr)
-            exit(1)
+            raise Exception("Missing name or arity of predicate in the input file")
+
         name, arity = split
         try:
             arity = int(arity)
         except ValueError:
-            print("One predicate's arity is not an integer", file=sys.stderr)
-            exit(1)
+            raise Exception("One predicate's arity is not an integer")
 
         if arity < 1:
-            print("One predicate's arity is not positive", file=sys.stderr)
-            exit(1)
+            raise Exception("One predicate's arity is not positive")
 
         parsed_predicates[name] = arity
     predicates = parsed_predicates
@@ -457,7 +458,7 @@ def build_match_one_of_token_machine(matches: List[str], token_name: str, back_s
     return FSM(states, start_state, transitions)
 
 
-def recursive_descent(replacement_rules, tokens, cursor_index, looking_for):
+def recursive_descent(replacement_rules, tokens, cursor_index, looking_for, expected_translator):
     current_token = tokens[cursor_index]
 
     if current_token.token_type == looking_for:
@@ -501,16 +502,23 @@ def recursive_descent(replacement_rules, tokens, cursor_index, looking_for):
                         used_rule, new_sequence = rule, sequence
 
         if new_sequence is None:
+            expected = expected_translator[looking_for]
             raise TokenError(
                 "Syntax Error",
-                f"Expected to find a '{looking_for}', instead found '{current_token.span}'",
+                f"Expected to find a '{expected}' ({looking_for}), instead found '{current_token.span}'",
                 current_token
             )
 
         new_cursor = cursor_index
         children = []
         for looking_for in new_sequence:
-            cursor_change, sub_tree = recursive_descent(replacement_rules, tokens, new_cursor, looking_for)
+            cursor_change, sub_tree = recursive_descent(
+                replacement_rules,
+                tokens,
+                new_cursor,
+                looking_for,
+                expected_translator
+            )
             new_cursor += cursor_change
             children.append(sub_tree)
 
@@ -578,12 +586,12 @@ def semantic_analysis(operation_tree, symbol_scope, fol):
             for operand in operation_tree.operands:
                 issues += semantic_analysis(operand, symbol_scope, fol)
         else:
-            print("WTF")
+            raise Exception("Unexpected Operator encountered")
 
     else:
 
         token = operation_tree
-        token_id = token.span
+        token_id = token.span  # identifier
 
         in_scope = token_id in symbol_scope
         is_constant = token_id in constants
@@ -680,6 +688,11 @@ def build_operation_tree(syntax_tree):
                 else:
                     return Operator(left, "PREDICATE", right)
 
+        elif root == "BIN_COMB":
+            left, middle, right = children
+
+            return Operator(middle, "BIN_OP", [left, right])
+
         elif root == "PRED_BODY":
             left, right = children
             return [left] + right
@@ -703,7 +716,12 @@ def print_replacement_rules(rules):
         print()
 
 
-def draw_operation_tree(tree):
+def draw_operation_tree(tree: Union[Operand, Token], tree_file_path: str) -> None:
+    """
+    This method creates an image of the operation tree passed to it and writes it to a file
+    :param tree: The tree to visualise
+    :param tree_file_path: The path of the tree image file which will be created
+    """
     graph = nx.Graph()
 
     labels = dict()
@@ -754,12 +772,28 @@ def draw_operation_tree(tree):
 
     nx.draw(graph, positions)
     nx.draw_networkx_labels(graph, positions, labels)
-    plt.savefig("operation_tree.png")
-    plt.show()
+    plt.savefig(tree_file_path)
 
 
-def main(input_file):
-    logic, formula = read_file(input_file)
+def main(input_file: str, tree_image_path: str, log_file_path: str) -> None:
+    log_file: TextIO = open(log_file_path, "w")
+    print(f"Arguments:\n"
+          f"Input File: {input_file}\n"
+          f"Tree Output File: {tree_image_path}\n"
+          f"Log File: {log_file_path}\n", file=log_file)
+
+    print("        Reading input file", file=log_file)
+    try:
+        logic, formula = read_file(input_file)
+        print("SUCCESS Reading input file", file=log_file)
+
+    except InvalidInputException as invalid_input:
+        print(f"FAIL    Reading input file, invalid input\n{invalid_input}", file=log_file)
+        return
+
+    except OSError as read_error:
+        print(f"FAIL    Reading input file, file couldn't be read\n{read_error}", file=log_file)
+        return
 
     variables, constants, predicates, equality, connectives, quantifiers = logic
 
@@ -773,7 +807,8 @@ def main(input_file):
         build_simple_match_token_machine(")", "CLOSE_BRACKET", [None]),
         build_simple_match_token_machine(",", "COMMA", [None]),
         build_match_one_of_token_machine(quantifiers, "BI_PRE_OP", white_space),
-        build_match_one_of_token_machine([equality] + connectives[:-1], "BI_IN_OP", white_space),
+        build_match_one_of_token_machine([equality], "BI_ID_IN_OP", white_space),
+        build_match_one_of_token_machine(connectives[:-1], "BI_IN_OP", white_space),
         build_match_one_of_token_machine([connectives[-1]], "UN_PRE_OP", white_space),
         build_repeated_symbol_token_machine(ascii_lowercase + ascii_uppercase + digits + "_", "IDENTIFIER")
     ]  # TODO write a function to combine all these machines into one
@@ -781,11 +816,16 @@ def main(input_file):
     replacement_rules = [
         ("FORMULA", [
             # in the following line [(0, "OPEN_BRACKET")] defines the lookahead needed to match this replacement
-            (["OPEN_BRACKET", "FORMULA", "BI_IN_OP", "FORMULA", "CLOSE_BRACKET"], [(0, "OPEN_BRACKET")]),
+            (["OPEN_BRACKET", "BIN_COMB", "CLOSE_BRACKET"], [(0, "OPEN_BRACKET")]),
             (["UN_PRE_OP", "FORMULA"], [(0, "UN_PRE_OP")]),
             (["IDENTIFIER", "OPEN_BRACKET", "PRED_BODY"], [(1, "OPEN_BRACKET")]),
             (["BI_PRE_OP", "IDENTIFIER", "FORMULA"], [(1, "IDENTIFIER")]),  # quantifier
             (["IDENTIFIER"], [(0, "IDENTIFIER")]),
+        ]),
+
+        ("BIN_COMB", [
+            (["IDENTIFIER", "BI_ID_IN_OP", "IDENTIFIER"], [(1, "BI_ID_IN_OP")]),
+            (["FORMULA", "BI_IN_OP", "FORMULA"], []),
         ]),
 
         ("PRED_BODY", [
@@ -797,30 +837,55 @@ def main(input_file):
             (["COMMA", "FORMULA", "PRED_BODY+"], [(0, "COMMA")]),
         ])
     ]
+    expected_translator = {
+        "OPEN_BRACKET": "(",
+        "CLOSE_BRACKET": ")",
+        "COMMA": ",",
+        "BI_PRE_OP": "Binary Prefix Operator (Quantifier)",
+        "BI_ID_IN_OP": "Binary Infix Operator on Variables/Constants",  # on identifiers
+        "BI_IN_OP": "Binary Infix Operator on Formulas",
+        "UN_PRE_OP": "Unary Prefix Operator",
+        "IDENTIFIER": "Variable or Constant",
+    }
     print_replacement_rules(replacement_rules)
 
+    print("        Tokenizing formula", file=log_file)
     token_list = to_tokens(formula, token_machines)
+    print("SUCCESS Tokenizing formula", file=log_file)
+
     try:
-        tokens_read, syntax_tree = recursive_descent(replacement_rules, token_list, 0, "FORMULA")
+        print("        Parsing formula", file=log_file)
+        tokens_read, syntax_tree = recursive_descent(replacement_rules, token_list, 0, "FORMULA", expected_translator)
 
         if tokens_read + 1 < len(token_list):  # +1 to account for EOF
             raise TokenError("Syntax Error", "Formula continued unexpectedly", token_list[tokens_read])
 
-        operation_tree = build_operation_tree(syntax_tree)
+        print("SUCCESS Parsing formula", file=log_file)
 
+        print("        Building Operation Tree", file=log_file)
+        operation_tree = build_operation_tree(syntax_tree)
+        print("SUCCESS Building Operation Tree", file=log_file)
+
+        print("        Analysing Semantics", file=log_file)
         issues = semantic_analysis(operation_tree, set(), logic)
+        print("SUCCESS Analysing Semantics", file=log_file)
 
         if len(issues) != 0:
+            print(f"        {len(issues)} issues found\n", file=log_file)
             for issues in issues:
-                print(issues.get_message(formula), file=sys.stderr)
-            exit(1)
+                print(issues.get_message(formula), file=log_file)
+            print(file=log_file)
+        else:
+            print("        No issues found", file=log_file)
 
-        print_operation_tree_to_stdout(operation_tree)
-        draw_operation_tree(operation_tree)
+        print("        Drawing Tree", file=log_file)
+        draw_operation_tree(operation_tree, tree_image_path)
+        print("SUCCESS Drawing Tree", file=log_file)
 
     except TokenError as syntax_error:
-        print(syntax_error.get_message(formula), file=sys.stderr)
-        exit(1)
+        print("FAIL    Parsing formula\n", file=log_file)
+        print(syntax_error.get_message(formula), file=log_file)
+        return
 
 
 def print_operation_tree_to_stdout(tree, depth=0):
@@ -845,7 +910,17 @@ def print_tree_to_stdout(tree, depth=0):
 
 
 if __name__ == '__main__':
-    # input_file = "./example_whitespace.txt"
-    # input = "./example.txt"
-    input_path = "./example1.txt"
-    main(input_path)
+    if len(sys.argv) == 4:
+        input_path = sys.argv[1]
+        tree_image_path = sys.argv[2]
+        log_file_path = sys.argv[3]
+
+        try:
+            main(input_path, tree_image_path, log_file_path)
+
+        except Exception as e:
+            print(f"Unrecoverable failure", file=sys.stderr)
+            print(e)
+            raise e
+    else:
+        print("Invalid command line arguments, see README.md", file=sys.stderr)

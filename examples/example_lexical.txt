@@ -1,0 +1,8 @@
+variables: w x y z
+constants: ANDY D
+predicates: ANDYS_PREDICATE[2] Q[1]
+equality: =
+connectives: AND \lor \implies \iff \neg
+quantifiers: A \forall
+formula: \forall x ( A y ( ANDYS_PREDICATE(x,y) \implies \neg Q(x) )
+\lor A z ( ( (ANDY = z) AND Q(z) ) AND ANDYS_PREDICATE(x,z) ) )
