@@ -1,12 +1,25 @@
-import sys
-from typing import Sequence, MutableSet
-from string import ascii_lowercase, ascii_uppercase, digits
 import math
+import sys
+from abc import abstractmethod
+from string import ascii_lowercase, ascii_uppercase, digits
+from typing import List, Tuple, Dict, Union
+import networkx as nx
+import matplotlib.pyplot as plt
 
 
 # from enum import Enum
 
-def read_file(input_file):
+def read_file(input_file: str) -> Tuple[
+    Tuple[
+        List[str],
+        List[str],
+        Dict[str, int],
+        str,
+        List[str],
+        List[str]
+    ],
+    str
+]:
     """
     This method reads in the file and performs some simple pre-processing and **simple** parsing on the input file.
     It returns the parsed FOL definition and the unchanged formula string
@@ -15,15 +28,8 @@ def read_file(input_file):
     """
 
     with open(input_file, "r") as file:
-        content = file.read().replace("\t", " ").replace("\n", " ").strip()
+        content = file.read()
         # file with all white space replaced with ' ' characters
-
-    without_whitespace = ""
-    for char in content:
-        if char != ' ' or without_whitespace[-1] != ' ':
-            without_whitespace += char
-    # replace all spans of whitespace with a singular space
-    content = without_whitespace
 
     search_for = [
         "variables",
@@ -71,15 +77,20 @@ def read_file(input_file):
     # at this point the strings between the "search_for"s are in the search_results map
     # these also have all white space replaced with spaces and have leading and trailing whitespace removed
 
-    variables = list(filter(lambda item: len(item) != 0, search_results["variables"].split(" ")))
-    constants = list(filter(lambda item: len(item) != 0, search_results["constants"].split(" ")))
+    def split_at_whitespace(string: str) -> List[str]:
+        replaced_whitespace = string.replace("\n", " ").replace("\t", " ").split(" ")
+        return list(filter(lambda item: len(item) != 0, replaced_whitespace))
+
+    variables = split_at_whitespace(search_results["variables"])
+    constants = split_at_whitespace(search_results["constants"])
     equality = search_results["equality"].strip()
-    connectives = list(filter(lambda item: len(item) != 0, search_results["connectives"].split(" ")))
-    quantifiers = list(filter(lambda item: len(item) != 0, search_results["quantifiers"].split(" ")))
+    connectives = split_at_whitespace(search_results["connectives"])
+    quantifiers = split_at_whitespace(search_results["quantifiers"])
     formula = search_results["formula"]
 
-    parsed_predicates = []
-    for predicate in search_results["predicates"].replace(" ", "").split("]"):  # remove all white space
+    parsed_predicates = dict()
+    whitespace_free_predicates = search_results["predicates"].replace(" ", "").replace("\n", " ").replace("\t", " ")
+    for predicate in whitespace_free_predicates.split("]"):  # remove all white space
 
         if len(predicate) == 0 or predicate == " ":
             continue
@@ -100,7 +111,7 @@ def read_file(input_file):
             print("One predicate's arity is not positive", file=sys.stderr)
             exit(1)
 
-        parsed_predicates.append((name, arity))
+        parsed_predicates[name] = arity
     predicates = parsed_predicates
 
     logic = (variables, constants, predicates, equality, connectives, quantifiers)
@@ -108,19 +119,67 @@ def read_file(input_file):
     return logic, formula
 
 
-class SyntaxError(Exception):
+class Token:
+    """
+    This class is used to store the tokens in the parsing process
+    """
 
-    def __init__(self, message, location_string, token):
+    def __init__(
+            self,
+            token_type: str,
+            token_id: int,
+            span: str,
+            line: int,
+            absolute_start: int,
+            line_start: int,
+            location: str
+    ):
+        self.token_type = token_type
+        self.token_id = token_id
+        self.span = span
+        self.line = line
+        self.absolute_start = absolute_start
+        self.line_start = line_start
+        self.location = location
+
+    def __str__(self) -> str:
+        return f"Token(type: '{self.token_type}', id: {self.token_id}, span: '{self.span}', " \
+               f"line: {self.line}, absolute_start: {self.absolute_start}, line_start: {self.line_start})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+    def get_location_string(self) -> str:
+        """
+        This method generates the string which describes where the token can be found
+        :return: The location string
+        """
+        return f"{self.location} {self.line}:{self.line_start} (character {self.absolute_start})"
+
+
+class TokenError(Exception):
+    """
+    This class represents all the Exceptions which can be raised during the parsing process
+    """
+
+    def __init__(
+            self,
+            title: str,
+            message: str,
+            token: Token
+    ):
+        self.title = title
         self.message = message
-        self.location_string = location_string
         self.token = token
 
-    def get_message(self, context_string):
-        string = f"Syntax Error " \
-                 f"in {self.location_string} {self.token.line}:{self.token.line_start} " \
-                 f"(character {self.token.absolute_start})\n"
+    def get_token_location_string(self, context_string: str) -> str:
+        """
+        This method builds a string which visually shows where in the context_string the token exists
+        :param context_string: The string in which the token exists
+        :return: The message
+        """
 
-        string += self.message + "\n"
+        string = ""
 
         line_start = self.token.absolute_start if self.token.absolute_start < len(context_string) else len(
             context_string) - 1
@@ -187,23 +246,17 @@ class SyntaxError(Exception):
 
         return string
 
-
-class Token:
-
-    def __init__(self, type, id, span, line, absolute_start, line_start):
-        self.type = type
-        self.id = id
-        self.span = span
-        self.line = line
-        self.absolute_start = absolute_start
-        self.line_start = line_start
-
-    def __str__(self) -> str:
-        return f"Token(type: '{self.type}', id: {self.id}, span: '{self.span}', " \
-               f"line: {self.line}, absolute_start: {self.absolute_start}, line_start: {self.line_start})"
-
-    def __repr__(self) -> str:
-        return self.__str__()
+    @abstractmethod
+    def get_message(self, context_string: str) -> str:
+        """
+        This method builds the user message representing the TokenError
+        :param context_string:
+        :return:
+        """
+        context_string += '\n'
+        return f"{self.title} in {self.token.get_location_string()}\n" \
+               f"{self.message}\n" \
+               f"{self.get_token_location_string(context_string)}\n"
 
 
 class FSM:
@@ -257,7 +310,8 @@ class FSM:
         return f"FSMInstance(state: '{self.current_state}', span:'{self.span}')"
 
 
-def tokenise(string: str, machines: Sequence[FSM]):
+def to_tokens(string: str, machines: List[FSM]):
+    location_description = "Formula"
     string += "\0"
 
     token_id = 0
@@ -290,7 +344,8 @@ def tokenise(string: str, machines: Sequence[FSM]):
                     span,
                     line,
                     cursor - len(span) + 1,
-                    cursor - line_start - len(span) + 1
+                    cursor - line_start - len(span) + 1,
+                    location_description
                 ))
                 token_id += 1
 
@@ -307,7 +362,7 @@ def tokenise(string: str, machines: Sequence[FSM]):
             line_start = cursor
 
     # add the EOF
-    tokens.append(Token("EOF", token_id, "", line, cursor, cursor - line_start))
+    tokens.append(Token("EOF", token_id, "EOF", line, cursor, cursor - line_start, location_description))
 
     return tokens
 
@@ -330,7 +385,15 @@ def build_repeated_symbol_token_machine(matching_characters, token_name):
     return FSM({accept: (True, token_name), start: None, matching: None}, start, transitions)
 
 
-def build_simple_match_token_machine(match, token_name):
+def build_simple_match_token_machine(match: str, token_name: str, back_step_characters: List[Union[str, None]]) -> FSM:
+    """
+    This method builds a FMS which accept the specified match
+    :param match: The matching string
+    :param token_name: The token type of the tokens this machine will produce
+    :param back_step_characters: The set of characters which can occur as the character after a match which cause the
+     match to be accepted, None meaning any character
+    :return: The FSM which accepts the specified string
+    """
     start_state = current = ""
 
     matched = 0
@@ -341,8 +404,10 @@ def build_simple_match_token_machine(match, token_name):
     }
 
     transitions = {
-        match: {None: matched}
+        match: dict()
     }
+    for char in back_step_characters:
+        transitions[match][char] = matched
 
     for char in match:
         next_state = current + char
@@ -355,14 +420,24 @@ def build_simple_match_token_machine(match, token_name):
     return FSM(states, start_state, transitions)
 
 
-def build_match_one_of_token_machine(matches, token_name):
+def build_match_one_of_token_machine(matches: List[str], token_name: str, back_step_characters: List[str]) -> FSM:
+    """
+    This method builds a FMS which accept any of the specified matches
+    :param matches: The list of strings that this machine will match
+    :param token_name: The token type of the tokens this machine will produce
+    :param back_step_characters: The set of characters which can occur as the character after a match which cause the
+     match to be accepted
+    :return: The FSM which accepts the specified strings
+    """
     matched = 0
 
     states = {matched: (True, token_name)}  # this state is the accepting state
     transitions = dict()
     for match in matches:
         states[match] = None
-        transitions[match] = {None: matched}
+        transitions[match] = dict()
+        for char in back_step_characters:
+            transitions[match][char] = matched
 
     start_state = ""
     for match in matches:
@@ -382,11 +457,12 @@ def build_match_one_of_token_machine(matches, token_name):
     return FSM(states, start_state, transitions)
 
 
-def recursive_descent(replacement_rules, tokens, cursor_index, looking_for, depth=0):
+def recursive_descent(replacement_rules, tokens, cursor_index, looking_for):
     current_token = tokens[cursor_index]
 
-    if current_token.type == looking_for:
+    if current_token.token_type == looking_for:
         # print("\t" * depth + f"found {looking_for}")
+
         return 1, current_token
     else:
 
@@ -406,17 +482,18 @@ def recursive_descent(replacement_rules, tokens, cursor_index, looking_for, dept
                 if used_rule is not None:
                     break
 
-                sequence, look_aheads = replacement
+                sequence, look_ahead = replacement
 
-                if len(look_aheads) == 0:
+                if len(look_ahead) == 0:
                     used_rule, new_sequence = rule, sequence
                     break
                 else:
                     matched = True
-                    for look_ahead in look_aheads:
+                    for look_ahead in look_ahead:
                         distance, expected = look_ahead
 
-                        if cursor_index + distance >= len(tokens) or tokens[cursor_index + distance].type != expected:
+                        if cursor_index + distance >= len(tokens) \
+                                or tokens[cursor_index + distance].token_type != expected:
                             matched = False
                             break
 
@@ -424,16 +501,16 @@ def recursive_descent(replacement_rules, tokens, cursor_index, looking_for, dept
                         used_rule, new_sequence = rule, sequence
 
         if new_sequence is None:
-            raise SyntaxError(f"Expected to find a '{looking_for}', instead found '{current_token.span}'", "Formula",
-                              current_token)
+            raise TokenError(
+                "Syntax Error",
+                f"Expected to find a '{looking_for}', instead found '{current_token.span}'",
+                current_token
+            )
 
         new_cursor = cursor_index
         children = []
         for looking_for in new_sequence:
-            # print(depth * '\t' + f"recurring at {new_cursor} to look for a {looking_for}")
-            #
-            cursor_change, sub_tree = recursive_descent(replacement_rules, tokens, new_cursor,
-                                                        looking_for, depth + 1)
+            cursor_change, sub_tree = recursive_descent(replacement_rules, tokens, new_cursor, looking_for)
             new_cursor += cursor_change
             children.append(sub_tree)
 
@@ -442,88 +519,333 @@ def recursive_descent(replacement_rules, tokens, cursor_index, looking_for, dept
         return index_change, (used_rule[0], children)
 
 
-def semantic_analysis(tree):
-    if isinstance(tree, str):
-        pass
-        # print("\t" * depth + tree)
-    else:
-        pass
-        # root, children = tree
-        # print("\t" * depth + root)
-        # for c in children:
-        #     print_tree(c, depth + 1)
+def semantic_analysis(operation_tree, symbol_scope, fol):
+    variables, constants, predicates, equality, connectives, quantifiers = fol
 
-    return tree
+    issues = []
+    if isinstance(operation_tree, Operator):
+
+        if operation_tree.operator_type == "QUANTIFIER":
+            variable_token, over_operator = operation_tree.operands
+            variable_id = variable_token.span
+
+            if variable_id in symbol_scope:
+                issues.append(TokenError(
+                    "Semantic Error",
+                    f"The quantified variable '{variable_id}' can't be bound again",
+                    variable_token
+                ))
+
+            if variable_id not in variables:
+                issues.append(TokenError(
+                    "Semantic Error",
+                    f"The variable '{variable_id}' is quantified over without declaration in the logic definition",
+                    variable_token
+                ))
+
+            if variable_id not in symbol_scope:
+                symbol_scope.add(variable_id)
+                issues += semantic_analysis(over_operator, symbol_scope, fol)
+                symbol_scope.remove(variable_id)
+            else:
+                issues += semantic_analysis(over_operator, symbol_scope, fol)
+
+        elif operation_tree.operator_type == "PREDICATE":
+
+            for argument in operation_tree.operands:
+                issues += semantic_analysis(argument, symbol_scope, fol)
+
+            predicate_identifier = operation_tree.token.span
+            if predicate_identifier not in predicates:
+                issues.append(TokenError(
+                    "Semantic Error",
+                    f"The predicate '{predicate_identifier}' is used without declaration in the logic definition",
+                    operation_tree.token
+                ))
+            else:  # is declared
+                if len(operation_tree.operands) != predicates[predicate_identifier]:
+                    issues.append(TokenError(
+                        "Semantic Error",
+                        f"The predicate '{predicate_identifier}' of arity {predicates[predicate_identifier]} is used"
+                        f" with {len(operation_tree.operands)} input",
+                        operation_tree.token
+                    ))
+
+        elif operation_tree.operator_type == "BIN_OP":
+            for operand in operation_tree.operands:
+                issues += semantic_analysis(operand, symbol_scope, fol)
+        elif operation_tree.operator_type == "UN_OP":  #
+            for operand in operation_tree.operands:
+                issues += semantic_analysis(operand, symbol_scope, fol)
+        else:
+            print("WTF")
+
+    else:
+
+        token = operation_tree
+        token_id = token.span
+
+        in_scope = token_id in symbol_scope
+        is_constant = token_id in constants
+        is_variable = token_id in variables
+
+        if not is_variable and not is_constant:
+            issues.append(TokenError(
+                "Semantic Error",
+                f"The identifier '{token_id}' doesn't refer to any variable or constant",
+                token
+            ))
+        elif is_variable and not in_scope:
+            issues.append(TokenError(
+                "Semantic Error",
+                f"The variable '{token_id}' is used before it is bound",
+                token
+            ))
+
+    return issues
+
+
+class Operand:
+    def __init__(self, token: Token):
+        self.token = token
+
+    def __str__(self) -> str:
+        return f"Operand({self.token.span})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+
+class Operator(Operand):
+    """
+    This class encodes the operation tree which is used for the semantic analysis part of the parser
+    """
+
+    def __init__(
+            self,
+            token: Token,
+            operator_type: str,
+            operands
+    ):
+        super().__init__(token)
+        self.operator_type = operator_type
+        self.operands = operands
+
+    def __str__(self) -> str:
+        return f"Operator({self.token.span})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+
+def build_operation_tree(syntax_tree):
+    if isinstance(syntax_tree, Token):  # terminal
+        token = syntax_tree
+
+        removable_tokens = {
+            "OPEN_BRACKET",
+            "CLOSE_BRACKET",
+            "COMMA",
+        }
+
+        if token.token_type in removable_tokens:
+            return None
+        else:
+            return token
+
+    else:
+
+        root, children = syntax_tree
+        children = [build_operation_tree(child) for child in children]
+        children = [child for child in children if child is not None]
+
+        if root == "FORMULA":
+            if len(children) == 1:
+                # rule (["IDENTIFIER"], [(0, "IDENTIFIER")])
+                return children[0]
+
+            elif len(children) == 3:
+                left, middle, right = children
+
+                if middle.token_type == "BI_IN_OP":
+                    return Operator(middle, "BIN_OP", [left, right])
+                else:
+                    return Operator(left, "QUANTIFIER", [middle, right])
+
+            else:  # len(children) == 2:
+                left, right = children
+                if left.token_type == "UN_PRE_OP":
+                    return Operator(left, "UN_OP", [right])
+
+                else:
+                    return Operator(left, "PREDICATE", right)
+
+        elif root == "PRED_BODY":
+            left, right = children
+            return [left] + right
+        else:  # root == "PRED_BODY+"
+            if len(children) == 0:
+                return []
+            else:
+                left, right = children
+                return [left] + right
+
+
+def print_replacement_rules(rules):
+    for root, replacements in rules:
+        print("<" + root + ">", "::=", end=" ")
+        for index, (new_sequence, _) in enumerate(replacements):
+            if index != 0:
+                print(" | ", end="")
+            for symbol in new_sequence:
+                print("<" + symbol + ">", end="")
+
+        print()
+
+
+def draw_operation_tree(tree):
+    graph = nx.Graph()
+
+    labels = dict()
+    positions = dict()
+
+    def build_operation_graph(
+            node: Union[Operator, Token],
+            start_x: int,
+            depth: int
+    ) -> Tuple[int, float]:
+        """
+        Simple post order traversal which builds the NetworkX operation tree graph.
+        :param node: The node of the operation tree which is to be added
+        :param start_x: The x coordinate lower bound for the tree which will be produced
+        :param depth: The depth in the tree
+        :return: The upper bound on the nodes in the produced tree and the x coordinate assigned to node
+        """
+
+        if isinstance(node, Operator):
+            labels[node] = node.token.span
+
+            sum_x = 0
+            end_x = start_x
+
+            for child in node.operands:
+                end_x, x = build_operation_graph(child, end_x, depth + 1)
+
+                sum_x += x
+
+                graph.add_edge(node, child)
+
+            x = sum_x / len(node.operands)
+            positions[node] = (x, -depth)
+
+            return end_x, x
+
+        else:
+            end_x = start_x + 1
+            x = (start_x + end_x) / 2
+
+            labels[node] = node.span
+            positions[node] = (x, -depth)
+            graph.add_node(node)
+
+            return end_x, x
+
+    build_operation_graph(tree, 0, 0)
+
+    nx.draw(graph, positions)
+    nx.draw_networkx_labels(graph, positions, labels)
+    plt.savefig("operation_tree.png")
+    plt.show()
 
 
 def main(input_file):
-    FOL, formula = read_file(input_file)
+    logic, formula = read_file(input_file)
+
+    variables, constants, predicates, equality, connectives, quantifiers = logic
 
     # ordered by priority, these machines run in parallel and simulate one massive machine
     # for example I could put the operators into the identifier machine but to save time I separated them
-    token_machines = [
-        build_simple_match_token_machine("(", "OPEN_BRACKET"),
-        build_simple_match_token_machine(")", "CLOSE_BRACKET"),
-        build_simple_match_token_machine(",", "COMMA"),
-        build_match_one_of_token_machine(["AND", "OR", "+"], "BI_IN_OP"),
-        build_match_one_of_token_machine(["NOT"], "UN_PRE_OP"),
-        build_repeated_symbol_token_machine(ascii_lowercase + ascii_uppercase + digits + "_", "IDENTIFIER")
-    ]
 
-    # TODO write a function to combine all these machines into one
+    white_space = [" ", "\t", "\n"]
+
+    token_machines = [
+        build_simple_match_token_machine("(", "OPEN_BRACKET", [None]),
+        build_simple_match_token_machine(")", "CLOSE_BRACKET", [None]),
+        build_simple_match_token_machine(",", "COMMA", [None]),
+        build_match_one_of_token_machine(quantifiers, "BI_PRE_OP", white_space),
+        build_match_one_of_token_machine([equality] + connectives[:-1], "BI_IN_OP", white_space),
+        build_match_one_of_token_machine([connectives[-1]], "UN_PRE_OP", white_space),
+        build_repeated_symbol_token_machine(ascii_lowercase + ascii_uppercase + digits + "_", "IDENTIFIER")
+    ]  # TODO write a function to combine all these machines into one
 
     replacement_rules = [
-        ("BIN_OP", [
-            (["AND"], [(0, "AND")]),
-            (["OR"], [(0, "OR")]),
-            (["+"], [(0, "+")])
-        ]),
-
-        ("EXPRESSION", [
-            (["OPEN_BRACKET", "EXPRESSION", "BI_IN_OP", "EXPRESSION", "CLOSE_BRACKET"], [(0, "OPEN_BRACKET")]),
-            (["UN_PRE_OP", "EXPRESSION"], [(0, "UN_PRE_OP")]),
-            (["IDENTIFIER", "PRED_BODY"], [(1, "OPEN_BRACKET")]),
+        ("FORMULA", [
+            # in the following line [(0, "OPEN_BRACKET")] defines the lookahead needed to match this replacement
+            (["OPEN_BRACKET", "FORMULA", "BI_IN_OP", "FORMULA", "CLOSE_BRACKET"], [(0, "OPEN_BRACKET")]),
+            (["UN_PRE_OP", "FORMULA"], [(0, "UN_PRE_OP")]),
+            (["IDENTIFIER", "OPEN_BRACKET", "PRED_BODY"], [(1, "OPEN_BRACKET")]),
+            (["BI_PRE_OP", "IDENTIFIER", "FORMULA"], [(1, "IDENTIFIER")]),  # quantifier
             (["IDENTIFIER"], [(0, "IDENTIFIER")]),
         ]),
 
         ("PRED_BODY", [
-            (["OPEN_BRACKET", "EXPRESSION", "PRED_BODY+"], [(0, "OPEN_BRACKET")]),
+            (["FORMULA", "PRED_BODY+"], []),
         ]),
 
         ("PRED_BODY+", [
             (["CLOSE_BRACKET"], [(0, "CLOSE_BRACKET")]),
-            (["COMMA", "EXPRESSION", "PRED_BODY+"], [(0, "COMMA")]),
-            ([], [])
+            (["COMMA", "FORMULA", "PRED_BODY+"], [(0, "COMMA")]),
         ])
     ]
-    terminals = {"IDENTIFIER", "OPEN_BRACKET", "CLOSE_BRACKET", "COMMA"}
-    string = '(\n	(\n		function_name(aVariable, bigvariable, constant, D) \n		AND\n		NOT function_2name(aVariable, bigvariable, constant, D)\n	) \n	OR\n	anotherone(aVariable, bigvariable, constant, D) \n)'
+    print_replacement_rules(replacement_rules)
 
-    # token_list = tokenise(formula, token_machines)
-    token_list = tokenise(string, token_machines)
+    token_list = to_tokens(formula, token_machines)
     try:
-        _, tree = recursive_descent(replacement_rules, token_list, 0, "EXPRESSION")
-        print_tree(tree)
+        tokens_read, syntax_tree = recursive_descent(replacement_rules, token_list, 0, "FORMULA")
 
-    except SyntaxError as syntax_error:
-        print(syntax_error.get_message(string), file=sys.stderr)
+        if tokens_read + 1 < len(token_list):  # +1 to account for EOF
+            raise TokenError("Syntax Error", "Formula continued unexpectedly", token_list[tokens_read])
+
+        operation_tree = build_operation_tree(syntax_tree)
+
+        issues = semantic_analysis(operation_tree, set(), logic)
+
+        if len(issues) != 0:
+            for issues in issues:
+                print(issues.get_message(formula), file=sys.stderr)
+            exit(1)
+
+        print_operation_tree_to_stdout(operation_tree)
+        draw_operation_tree(operation_tree)
+
+    except TokenError as syntax_error:
+        print(syntax_error.get_message(formula), file=sys.stderr)
         exit(1)
 
-    operation_tree = semantic_analysis(tree)
 
-    print_tree(operation_tree)
+def print_operation_tree_to_stdout(tree, depth=0):
+    if isinstance(tree, Operator):
+        print("\t" * depth + f"{tree.token.span}")
+
+        for c in tree.operands:
+            print_operation_tree_to_stdout(c, depth + 1)
+
+    else:
+        print("\t" * depth + str(tree.span))
 
 
-def print_tree(tree, depth=0):
+def print_tree_to_stdout(tree, depth=0):
     if isinstance(tree, Token):
         print("\t" * depth + str(tree))
     else:
         root, children = tree
         print("\t" * depth + root)
         for c in children:
-            print_tree(c, depth + 1)
+            print_tree_to_stdout(c, depth + 1)
 
 
 if __name__ == '__main__':
-    input_file = "./example_whitespace.txt"
-    main(input_file)
+    # input_file = "./example_whitespace.txt"
+    # input = "./example.txt"
+    input_path = "./example1.txt"
+    main(input_path)
