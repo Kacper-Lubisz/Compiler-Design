@@ -813,6 +813,7 @@ def print_replacement_rules(
     ]
     """
 
+    print("\nThe replacement rules from which the parse tree is built")
     for root, replacements in rules:
         print("<" + root + ">", "::=", end=" ")
         for index, (new_sequence, _) in enumerate(replacements):
@@ -881,6 +882,50 @@ def draw_operation_tree(tree: Union[Operator, Token], tree_file_path: str) -> No
     nx.draw(graph, positions)
     nx.draw_networkx_labels(graph, positions, labels)
     plt.savefig(tree_file_path)
+
+
+def print_other_rules(logic: Tuple[List[str], List[str], Dict[str, int], str, List[str], List[str]]) -> None:
+    """
+    This method prints the replacement rules which are not part of the which is parsed
+    :param:
+    """
+    variables, constants, predicates, equality, connectives, quantifiers = logic
+
+    standard_symbols = '_' + ascii_lowercase + ascii_uppercase + digits
+    standard_symbols_set = set(standard_symbols)
+    extra_symbols = list({char for char in "".join(connectives + quantifiers) if char not in standard_symbols_set})
+    symbols = standard_symbols + "".join(extra_symbols)
+
+    print("Symbols")
+    print("Non-Terminals = {"
+          "<FORMULA>,"
+          "<BIN_COMB>,"
+          "<PRED_BODY>,"
+          "<PRED_BODY+>,"
+          "<COMMA>,"
+          "<OPEN_BRACKET>,"
+          "<CLOSE_BRACKET>,"
+          "<IDENTIFIER>,"
+          "<LETTER_DIGIT_UNDERSCORE>,"
+          "<BI_PRE_OP>,"
+          "<BI_ID_IN_OP>,"
+          "<BI_IN_OP>,"
+          "<UN_PRE_OP>,"
+          "}")
+    print(f"Terminals = {{{', '.join(symbols)}}}")
+
+    print("\nParts of the grammar which are dealt with at the lexical layer")
+    print(
+        "<COMMA> ::= ,\n"
+        "<OPEN_BRACKET> ::= (\n"
+        "<CLOSE_BRACKET> ::= )\n"
+        "<IDENTIFIER> ::= <LETTER_DIGIT_UNDERSCORE><IDENTIFIER>|EMPTY_STRING\n"
+        f"<LETTER_DIGIT_UNDERSCORE> ::= {' | '.join(symbols)}\n"
+        f"<BI_PRE_OP> ::= {connectives[-1]}\n"
+        f"<BI_ID_IN_OP> ::= {equality}\n"
+        f"<BI_IN_OP> ::= {' | '.join(connectives[:-1])}\n"
+        f"<UN_PRE_OP> ::= {' | '.join(quantifiers)}\n"
+    )
 
 
 def main(input_file: str, tree_path: str, log_path: str) -> None:
@@ -955,6 +1000,7 @@ def main(input_file: str, tree_path: str, log_path: str) -> None:
         "UN_PRE_OP": "Unary Prefix Operator",
         "IDENTIFIER": "Variable or Constant",
     }
+    print_other_rules(logic)
     print_replacement_rules(replacement_rules)
 
     print("        Tokenizing formula", file=log_file)
