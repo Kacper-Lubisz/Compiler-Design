@@ -1,5 +1,12 @@
 #Instructions
 
+## Note
+
+I know that the assignment is quite specific in its wording to ensure that lost errors in the tree exist at the grammar
+level (such as the number of arguments).
+My implementation has its grammar defined more generically such that this error is raised at a semantic pass.
+I hope this isn't an issue. 
+
 ## Examples
 
 Example inputs for the parser are provided in `examples/`

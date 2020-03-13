@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 python parser.py examples/example.txt tree_example.png log_example.txt
 python parser.py examples/example1.txt tree_example1.png log_example1.txt
 python parser.py examples/example_whitespace.txt tree_example_whitespace.png log_example_whitespace.txt
