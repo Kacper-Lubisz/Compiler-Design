@@ -973,12 +973,11 @@ def main(input_file: str, tree_path: str, log_path: str) -> None:
             (["UN_PRE_OP", "FORMULA"], [(0, "UN_PRE_OP")]),
             (["IDENTIFIER", "OPEN_BRACKET", "PRED_BODY"], [(1, "OPEN_BRACKET")]),
             (["BI_PRE_OP", "IDENTIFIER", "FORMULA"], [(1, "IDENTIFIER")]),  # quantifier
-            # (["IDENTIFIER"], [(0, "IDENTIFIER")]),
+            (["IDENTIFIER"], [(0, "IDENTIFIER")]),
         ]),
 
         ("BIN_COMB", [
             (["IDENTIFIER", "BI_ID_IN_OP", "IDENTIFIER"], [(1, "BI_ID_IN_OP")]),
-            (["IDENTIFIER", "BI_IN_OP", "IDENTIFIER"], [(0, "IDENTIFIER")]),
             (["FORMULA", "BI_IN_OP", "FORMULA"], []),
         ]),
 
